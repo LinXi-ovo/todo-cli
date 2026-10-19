@@ -25,10 +25,9 @@ DEFAULT_CONFIG = {
     "show_list_after_done": True,     # td d 之后
     # 输入归一化：命令名大小写不敏感 + 任务名连续空格合并
     "normalize_input": True,
-    # ---- 大模型接口（td @ 内容 用）----
+    # ---- 大模型接口（td @ 内容 用，仅 OpenAI 兼容格式）----
     "llm_url": "",                          # 例如 https://api.deepseek.com
     "llm_model": "",                        # 例如 deepseek-chat
-    "llm_api_style": "openai",              # openai / anthropic / custom
     "llm_apikey": "",                       # 一般不填，放 .env 的 TD_LLM_APIKEY
     "llm_timeout": 60,                      # 请求超时秒数
     "llm_auto_confirm": False,              # 生成后是否免确认直接写入
@@ -247,7 +246,6 @@ def cmd_config(args):
               "  normalize_input        命令大小写不敏感、任务名空格合并（默认 是）\n"
               "  llm_url                大模型接口地址，如 https://api.deepseek.com\n"
               "  llm_model              模型名，如 deepseek-chat\n"
-              "  llm_api_style          接口格式：openai / anthropic / custom（默认 openai）\n"
               "  llm_apikey             apikey，建议放 .env 的 TD_LLM_APIKEY\n"
               "  llm_timeout            请求超时秒数（默认 60）\n"
               "  llm_auto_confirm       生成后免确认直接写入（默认 否）")
@@ -267,12 +265,10 @@ def cmd_at(text):
         print("\n配置提示（括号内为当前值）：")
         print(f"  llm_url       = {CONFIG.get('llm_url') or '（空）'}")
         print(f"  llm_model     = {CONFIG.get('llm_model') or '（空）'}")
-        print(f"  llm_api_style = {CONFIG.get('llm_api_style') or '（空）'}")
-        print(f"  apikey        = {'已配置' if llm.resolve_api_key(CONFIG, llm.load_env(ENV_PATH)) else '未配置'}")
+        print(f"  apikey        = {'已配置' if llm.resolve_api_key(CONFIG, ENV_PATH) else '未配置'}")
         print(f"\n设置示例：\n"
               f"  td cfg set llm_url https://api.deepseek.com\n"
               f"  td cfg set llm_model deepseek-chat\n"
-              f"  td cfg set llm_api_style openai\n"
               f"  然后在 {ENV_PATH} 写入：TD_LLM_APIKEY=sk-xxx")
         sys.exit(1)
 

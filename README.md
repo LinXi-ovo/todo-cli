@@ -80,7 +80,6 @@ td cfg get editor         # 读取单项
 | `normalize_input` | 是 | 命令名大小写不敏感、任务名连续空格合并为单个 |
 | `llm_url` | 空 | 大模型接口地址 |
 | `llm_model` | 空 | 模型名称 |
-| `llm_api_style` | `openai` | 接口格式：`openai` / `anthropic` / `custom` |
 | `llm_apikey` | 空 | apikey，建议留空改放 `.env` |
 | `llm_timeout` | 60 | 请求超时秒数 |
 | `llm_auto_confirm` | 否 | 生成后免确认直接写入 |
@@ -136,21 +135,23 @@ TD_LLM_APIKEY=sk-your-key-here
 ```bash
 td cfg set llm_url https://api.deepseek.com
 td cfg set llm_model deepseek-chat
-td cfg set llm_api_style openai
 ```
 
-`llm_api_style` 决定请求格式：
+只支持 OpenAI 兼容接口（`/v1/chat/completions`）。`llm_url` 填 base 地址即可，程序会自动补路径；如果填的是完整地址则原样使用。
 
-| 值 | 请求路径 | 鉴权头 | 典型地址 |
-| --- | --- | --- | --- |
-| `openai` | 自动补 `/v1/chat/completions` | `Authorization: Bearer` | `https://api.deepseek.com` |
-| `anthropic` | 自动补 `/v1/messages` | `x-api-key` + `anthropic-version` | `https://api.anthropic.com` |
-| `custom` | 原样使用你填的地址 | `Authorization: Bearer` | `https://your-proxy.com/v1/chat/completions` |
+常见服务商：
 
-如果 `llm_url` 本身已经以 `chat/completions` 或 `/messages` 结尾，则不会再重复拼接路径。
+| 服务商 | `llm_url` | `llm_model` 示例 |
+| --- | --- | --- |
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| OpenAI | `https://api.openai.com` | `gpt-4o-mini` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode` | `qwen-plus` |
+| 月之暗面 | `https://api.moonshot.cn` | `moonshot-v1-8k` |
+| Ollama（本地） | `http://localhost:11434` | `qwen2.5` |
 
 ### 3. 其他说明
 
+- 依赖：`requests`、`python-dotenv`
 - 本地模型（Ollama / LM Studio）把 `llm_url` 设为 `http://localhost:11434`，apikey 可留空
 - `llm_auto_confirm` 设为 `是` 可跳过确认直接写入
 - 模型输出即使被 markdown 代码块包裹、或夹带说明文字，也会被自动提取成任务列表
