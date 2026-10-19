@@ -45,6 +45,7 @@ Windows 下也可以用 `td.bat`（等价于 `uv run td.py`）。想全局使用
 | `self` | `s` | 用编辑器打开源文件 |
 | `config` | `cfg` | 打开配置文件（`cfg show` 查看当前值） |
 | `version` | `v` | 显示版本信息 |
+| `@ <内容>` | `ai` | 交给大模型拆成多条任务 |
 | `help` | `h` | 显示帮助 |
 
 示例：
@@ -77,6 +78,12 @@ td cfg get editor         # 读取单项
 | `show_list_after_delete` | 否 | `td x` 之后是否自动显示列表 |
 | `show_list_after_done` | 是 | `td d` 之后是否自动显示列表 |
 | `normalize_input` | 是 | 命令名大小写不敏感、任务名连续空格合并为单个 |
+| `llm_url` | 空 | 大模型接口地址 |
+| `llm_model` | 空 | 模型名称 |
+| `llm_api_style` | `openai` | 接口格式：`openai` / `anthropic` / `custom` |
+| `llm_apikey` | 空 | apikey，建议留空改放 `.env` |
+| `llm_timeout` | 60 | 请求超时秒数 |
+| `llm_auto_confirm` | 否 | 生成后免确认直接写入 |
 
 开关类配置接受 `是/否`、`true/false`、`on/off`、`1/0` 等写法，统一以布尔值存储：
 
@@ -95,6 +102,59 @@ td   a   "写   报告"  # 任务名连续空格合并为「写 报告」
 ```
 
 任务名允许重复，同名任务会各自占用一个编号。
+
+## 用大模型生成任务：`td @`
+
+把一段自然语言交给大模型，自动拆成多条待办：
+
+```bash
+td @ 明天交色彩作业，顺便买牛奶
+```
+
+```
+正在交给大模型解析…
+
+解析出 2 条任务：
+  1. 明天交色彩作业
+  2. 买牛奶
+
+确认添加？(Y/n)
+```
+
+### 1. 准备密钥
+
+复制 `.env.example` 为 `.env`，填入 apikey：
+
+```bash
+TD_LLM_APIKEY=sk-your-key-here
+```
+
+`.env` 已在 `.gitignore` 中排除，不会被提交。也支持用 `td cfg set llm_apikey env:MY_OTHER_KEY` 间接引用其他环境变量。
+
+### 2. 配置接口
+
+```bash
+td cfg set llm_url https://api.deepseek.com
+td cfg set llm_model deepseek-chat
+td cfg set llm_api_style openai
+```
+
+`llm_api_style` 决定请求格式：
+
+| 值 | 请求路径 | 鉴权头 | 典型地址 |
+| --- | --- | --- | --- |
+| `openai` | 自动补 `/v1/chat/completions` | `Authorization: Bearer` | `https://api.deepseek.com` |
+| `anthropic` | 自动补 `/v1/messages` | `x-api-key` + `anthropic-version` | `https://api.anthropic.com` |
+| `custom` | 原样使用你填的地址 | `Authorization: Bearer` | `https://your-proxy.com/v1/chat/completions` |
+
+如果 `llm_url` 本身已经以 `chat/completions` 或 `/messages` 结尾，则不会再重复拼接路径。
+
+### 3. 其他说明
+
+- 本地模型（Ollama / LM Studio）把 `llm_url` 设为 `http://localhost:11434`，apikey 可留空
+- `llm_auto_confirm` 设为 `是` 可跳过确认直接写入
+- 模型输出即使被 markdown 代码块包裹、或夹带说明文字，也会被自动提取成任务列表
+- 单元测试：`python test_llm.py`（自带本地 mock 服务，不消耗真实额度）
 
 ## 数据存储
 

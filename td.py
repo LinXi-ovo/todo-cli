@@ -4,12 +4,15 @@ import os
 import subprocess
 from pathlib import Path
 
-VERSION = "1.1.0"
+import llm
+
+VERSION = "1.2.0"
 
 # 路径全部基于脚本所在目录，避免受"当前工作目录"影响
 BASE_DIR    = Path(__file__).resolve().parent
 FILE_PATH   = BASE_DIR / "tasks.json"
 CONFIG_PATH = BASE_DIR / ".td_config.json"
+ENV_PATH    = BASE_DIR / ".env"
 
 TASKS = []
 CONFIG = {}
@@ -22,6 +25,13 @@ DEFAULT_CONFIG = {
     "show_list_after_done": True,     # td d 之后
     # 输入归一化：命令名大小写不敏感 + 任务名连续空格合并
     "normalize_input": True,
+    # ---- 大模型接口（td @ 内容 用）----
+    "llm_url": "",                          # 例如 https://api.deepseek.com
+    "llm_model": "",                        # 例如 deepseek-chat
+    "llm_api_style": "openai",              # openai / anthropic / custom
+    "llm_apikey": "",                       # 一般不填，放 .env 的 TD_LLM_APIKEY
+    "llm_timeout": 60,                      # 请求超时秒数
+    "llm_auto_confirm": False,              # 生成后是否免确认直接写入
 }
 
 # 布尔配置项的友好写法
@@ -234,7 +244,63 @@ def cmd_config(args):
               "  show_list_after_add    td a 后是否自动显示列表（默认 否）\n"
               "  show_list_after_delete td x 后是否自动显示列表（默认 否）\n"
               "  show_list_after_done   td d 后是否自动显示列表（默认 是）\n"
-              "  normalize_input        命令大小写不敏感、任务名空格合并（默认 是）")
+              "  normalize_input        命令大小写不敏感、任务名空格合并（默认 是）\n"
+              "  llm_url                大模型接口地址，如 https://api.deepseek.com\n"
+              "  llm_model              模型名，如 deepseek-chat\n"
+              "  llm_api_style          接口格式：openai / anthropic / custom（默认 openai）\n"
+              "  llm_apikey             apikey，建议放 .env 的 TD_LLM_APIKEY\n"
+              "  llm_timeout            请求超时秒数（默认 60）\n"
+              "  llm_auto_confirm       生成后免确认直接写入（默认 否）")
+
+
+def cmd_at(text):
+    """td @ 内容：交给大模型拆成若干任务"""
+    if not text or not text.strip():
+        print("错误：@ 后面要跟内容，例如 td @ 明天交报告然后买牛奶")
+        sys.exit(1)
+
+    print("正在交给大模型解析…")
+    try:
+        titles = llm.generate_titles(text, CONFIG, ENV_PATH)
+    except llm.LLMError as exc:
+        print(f"错误：{exc}")
+        print("\n配置提示（括号内为当前值）：")
+        print(f"  llm_url       = {CONFIG.get('llm_url') or '（空）'}")
+        print(f"  llm_model     = {CONFIG.get('llm_model') or '（空）'}")
+        print(f"  llm_api_style = {CONFIG.get('llm_api_style') or '（空）'}")
+        print(f"  apikey        = {'已配置' if llm.resolve_api_key(CONFIG, llm.load_env(ENV_PATH)) else '未配置'}")
+        print(f"\n设置示例：\n"
+              f"  td cfg set llm_url https://api.deepseek.com\n"
+              f"  td cfg set llm_model deepseek-chat\n"
+              f"  td cfg set llm_api_style openai\n"
+              f"  然后在 {ENV_PATH} 写入：TD_LLM_APIKEY=sk-xxx")
+        sys.exit(1)
+
+    if not titles:
+        print("模型没有生成任何任务。")
+        return
+
+    print(f"\n解析出 {len(titles)} 条任务：")
+    for i, t in enumerate(titles, 1):
+        print(f"  {i}. {t}")
+
+    if not CONFIG.get("llm_auto_confirm"):
+        try:
+            answer = input("\n确认添加？(Y/n) ").strip().lower()
+        except EOFError:
+            answer = "n"
+        if answer in ("n", "no", "否"):
+            print("已取消。")
+            return
+
+    for t in titles:
+        TASKS.append({"title": t, "done": False})
+    save_tasks()
+    print(f"\n已添加 {len(titles)} 条任务。")
+
+    if CONFIG.get("show_list_after_add"):
+        print()
+        list_tasks()
 
 
 def show_version():
@@ -299,7 +365,9 @@ def main():
     cmd  = resolve(sys.argv[1])
     args = sys.argv[2:]
 
-    if cmd == "add":
+    if cmd == "@" or cmd == "ai":
+        cmd_at(" ".join(args))
+    elif cmd == "add":
         if not args:
             print("错误：add 需要任务名，例如 td add 买牛奶")
             sys.exit(1)
