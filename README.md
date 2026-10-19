@@ -52,6 +52,7 @@ td.bat <命令> [参数]
 | `config` | `cfg` | 打开配置文件（`cfg show` 查看当前值） |
 | `version` | `v` | 显示版本信息 |
 | `i <内容>` | `ai` | 交给大模型拆成多条任务 |
+| `ai-undo` | `ic` | 撤回上次 `td i` 添加的任务 |
 | `help` | `h` | 显示帮助 |
 
 示例：
@@ -88,7 +89,7 @@ td cfg get editor         # 读取单项
 | `llm_model` | 空 | 模型名称 |
 | `llm_apikey` | 空 | apikey，建议留空改放 `.env` |
 | `llm_timeout` | 60 | 请求超时秒数 |
-| `llm_auto_confirm` | 否 | 生成后免确认直接写入 |
+| `llm_auto_confirm` | 是 | 直接写入不询问；设为否则恢复确认 |
 
 开关类配置接受 `是/否`、`true/false`、`on/off`、`1/0` 等写法，统一以布尔值存储：
 
@@ -123,8 +124,22 @@ td i 明天交色彩作业，顺便买牛奶
   1. 明天交色彩作业
   2. 买牛奶
 
-确认添加？(Y/n)
+已添加 2 条任务。（如需撤回：td ic）
 ```
+
+默认直接写入，不询问。加错了就用 `td ic` 撤回刚才那一批：
+
+```
+td ic
+```
+
+```
+已撤回 2 条任务：
+  - 明天交色彩作业
+  - 买牛奶
+```
+
+撤回记录保存在 `.td_last_add.json`（已在 `.gitignore` 中排除），只对**最近一次** `td i` 有效，撤回后即清除。
 
 ### 1. 准备密钥
 
@@ -158,7 +173,7 @@ td cfg set llm_model deepseek-chat
 ### 3. 其他说明
 
 - 本地模型（Ollama）apikey 可留空
-- `llm_auto_confirm` 设为 `是` 可跳过确认直接写入
+- `llm_auto_confirm` 默认为 `是`（直接写入）；设为 `否` 会恢复“确认添加？(Y/n)”询问
 - 模型输出即使被 markdown 代码块包裹、或夹带说明文字，也会被自动提取成任务列表
 - 单元测试：`python test_llm.py`（自带临时 HTTP 服务，不消耗真实额度）
 

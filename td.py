@@ -1,5 +1,6 @@
 import sys
 import json
+import time
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,7 @@ BASE_DIR    = Path(__file__).resolve().parent
 FILE_PATH   = BASE_DIR / "tasks.json"
 CONFIG_PATH = BASE_DIR / ".td_config.json"
 ENV_PATH    = BASE_DIR / ".env"
+UNDO_PATH   = BASE_DIR / ".td_last_add.json"
 
 TASKS = []
 CONFIG = {}
@@ -30,7 +32,7 @@ DEFAULT_CONFIG = {
     "llm_model": "",                        # 例如 deepseek-chat
     "llm_apikey": "",                       # 一般不填，放 .env 的 TD_LLM_APIKEY
     "llm_timeout": 60,                      # 请求超时秒数
-    "llm_auto_confirm": False,              # 生成后是否免确认直接写入
+    "llm_auto_confirm": True,               # 默认直接写入，不询问；设否可恢复确认
 }
 
 # 布尔配置项的友好写法
@@ -50,6 +52,7 @@ ALIASES = {
     "cfg": "config",
     "v": "version",
     "i": "ai",
+    "ic": "ai-undo",
     "@": "ai",
 }
 
@@ -88,6 +91,71 @@ def load_tasks():
 def save_tasks():
     with open(FILE_PATH, "w", encoding="utf-8") as f:
         json.dump(TASKS, f, ensure_ascii=False, indent=2)
+
+
+# ---------- 撤销快照 ----------
+def record_added(titles):
+    """记下本次新增了哪些任务，供 td ic 撤回"""
+    snapshot = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "titles": list(titles),
+    }
+    try:
+        with open(UNDO_PATH, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        print(f"警告：撤销记录写入失败（{exc}），本次无法用 td ic 撤回。")
+
+
+def load_last_add():
+    """读取上一次新增快照，没有则返回 None"""
+    if not UNDO_PATH.exists():
+        return None
+    try:
+        with open(UNDO_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not data.get("titles"):
+        return None
+    return data
+
+
+def cmd_undo():
+    """td ic：撤回上一次添加的任务"""
+    snapshot = load_last_add()
+    if not snapshot:
+        print("没有可撤回的记录。")
+        return
+
+    titles = snapshot["titles"]
+    remaining = list(titles)
+    removed = []
+
+    # 从后往前按标题匹配删除，保证同名任务只删一次
+    for title in remaining:
+        for idx in range(len(TASKS) - 1, -1, -1):
+            if TASKS[idx]["title"] == title:
+                TASKS.pop(idx)
+                removed.append(title)
+                break
+
+    if not removed:
+        print(f"撤回失败：列表里找不到上次添加的任务（{snapshot.get('time', '未知时间')}）。")
+        UNDO_PATH.unlink(missing_ok=True)
+        return
+
+    save_tasks()
+    UNDO_PATH.unlink(missing_ok=True)
+
+    print(f"已撤回 {len(removed)} 条任务：")
+    for t in removed:
+        print(f"  - {t}")
+    missing = [t for t in titles if t not in removed]
+    if missing:
+        print(f"\n有 {len(missing)} 条已被手动改动，未能撤回：")
+        for t in missing:
+            print(f"  - {t}")
 
 
 # ---------- 各命令实现 ----------
@@ -250,7 +318,7 @@ def cmd_config(args):
               "  llm_model              模型名，如 deepseek-chat\n"
               "  llm_apikey             apikey，建议放 .env 的 TD_LLM_APIKEY\n"
               "  llm_timeout            请求超时秒数（默认 60）\n"
-              "  llm_auto_confirm       生成后免确认直接写入（默认 否）")
+              "  llm_auto_confirm       是否直接写入不询问（默认 是）")
 
 
 def cmd_at(text):
@@ -282,7 +350,8 @@ def cmd_at(text):
     for i, t in enumerate(titles, 1):
         print(f"  {i}. {t}")
 
-    if not CONFIG.get("llm_auto_confirm"):
+    # 默认自动添加；只有 llm_auto_confirm 显式设为「否」才询问
+    if CONFIG.get("llm_auto_confirm") is False:
         try:
             answer = input("\n确认添加？(Y/n) ").strip().lower()
         except EOFError:
@@ -290,11 +359,11 @@ def cmd_at(text):
         if answer in ("n", "no", "否"):
             print("已取消。")
             return
-
     for t in titles:
         TASKS.append({"title": t, "done": False})
     save_tasks()
-    print(f"\n已添加 {len(titles)} 条任务。")
+    record_added(titles)
+    print(f"\n已添加 {len(titles)} 条任务。（如需撤回：td ic）")
 
     if CONFIG.get("show_list_after_add"):
         print()
@@ -325,6 +394,7 @@ self                         s       打开脚本源文件
 config                       cfg     查看/修改配置
 version                      v       显示版本信息
 ai <内容>                    i       交给大模型拆成多条任务
+ai-undo                      ic      撤回上次 ai 添加的任务
 help                         h       显示帮助
 
 示例：
@@ -366,6 +436,8 @@ def main():
 
     if cmd == "ai":
         cmd_at(" ".join(args))
+    elif cmd == "ai-undo":
+        cmd_undo()
     elif cmd == "add":
         if not args:
             print("错误：add 需要任务名，例如 td add 买牛奶")

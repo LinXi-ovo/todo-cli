@@ -4,6 +4,9 @@ tasks.json
 # 本地配置（含本机编辑器路径等）
 .td_config.json
 
+# td i 的撤销快照
+.td_last_add.json
+
 # 密钥文件，绝对不能入库
 .env
 .env.*
