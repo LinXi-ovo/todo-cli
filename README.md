@@ -43,7 +43,8 @@ Windows 下也可以用 `td.bat`（等价于 `uv run td.py`）。想全局使用
 | `delete <编号>` | `x` | 删除任务 |
 | `clear` | `c` | 清空全部（需确认） |
 | `self` | `s` | 用编辑器打开源文件 |
-| `config` | `cfg` | 查看/修改配置 |
+| `config` | `cfg` | 打开配置文件（`cfg show` 查看当前值） |
+| `version` | `v` | 显示版本信息 |
 | `help` | `h` | 显示帮助 |
 
 示例：
@@ -58,12 +59,29 @@ td x 1
 
 ## 配置
 
-配置文件为脚本同目录下的 `.td_config.json`（首次修改时自动生成）：
+配置文件为脚本同目录下的 `.td_config.json`（首次 `td cfg` 或修改时自动生成）。
 
 ```bash
-td cfg                    # 查看当前配置
+td cfg                    # 用编辑器打开配置文件
+td cfg show               # 只在终端查看当前配置
 td cfg set editor vim     # 修改编辑器
 td cfg get editor         # 读取单项
+```
+
+可配置项：
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `editor` | `notepad`（Windows）/ `$EDITOR` | 打开脚本和配置文件用的编辑器 |
+| `show_list_after_add` | 否 | `td a` 之后是否自动显示列表 |
+| `show_list_after_delete` | 否 | `td x` 之后是否自动显示列表 |
+| `show_list_after_done` | 是 | `td d` 之后是否自动显示列表 |
+
+开关类配置接受 `是/否`、`true/false`、`on/off`、`1/0` 等写法，统一以布尔值存储：
+
+```bash
+td cfg set show_list_after_add 是
+td cfg set show_list_after_done false
 ```
 
 ## 数据存储
