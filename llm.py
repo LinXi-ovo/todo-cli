@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -16,17 +18,39 @@ import os
 DEFAULT_PATH = "/v1/chat/completions"
 
 SYSTEM_PROMPT = (
-    "你是一个待办事项提取助手。把用户给出的自然语言描述拆解成若干条独立、"
-    "简短、可执行的待办任务。\n"
-    "只输出 JSON 字符串数组，不要解释文字，不要 markdown 代码块。\n"
-    "保留时间、地点等关键信息，保持简洁。只有一件事就返回单元素数组。\n"
-    '示例：["明天交色彩作业", "买牛奶"]'
+    "你是一个日程与待办解析助手。把用户给出的自然语言描述拆解成若干条独立任务，"
+    "并为每条提取时间信息和类型。\n"
+    "\n"
+    "严格只输出 JSON 数组，不要解释文字，不要 markdown 代码块。\n"
+    "每个元素是一个对象，字段如下：\n"
+    '  "title": 任务标题，简短可执行，去掉时间词后仍语义完整\n'
+    '  "date":  截止/执行日期，格式 YYYY-MM-DD；无法确定时输出 null\n'
+    '  "time":  具体时刻，格式 HH:MM（24 小时制）；无法确定时输出 null\n'
+    '  "remind":提醒时间，格式 HH:MM；未提及则 null（默认在 time 前 10 分钟提醒）\n'
+    '  "type":  任务类型，只能取以下之一：'
+    "work（工作）/ study（学习）/ life（生活）/ health（健康）/ "
+    "meeting（会议）/ other（其他）\n"
+    "\n"
+    "今天是 {today}，当前时间 {now}，请据此推算「明天」「下周三」「三天后」等相对时间。\n"
+    "\n"
+    "示例输入：明天下午3点开组会，晚上8点吃药\n"
+    "示例输出：\n"
+    '[{{"title":"开组会","date":"2026-10-20","time":"15:00","remind":null,"type":"meeting"}},'
+    '{{"title":"吃药","date":"2026-10-20","time":"20:00","remind":null,"type":"health"}}]'
 )
 
 
 class LLMError(Exception):
     """调用大模型过程中的可预期错误"""
 
+
+def build_system_prompt() -> str:
+    """把当前日期时间注入提示词，便于模型推算相对时间"""
+    now = datetime.now()
+    return SYSTEM_PROMPT.format(
+        today=now.strftime("%Y-%m-%d"),
+        now=now.strftime("%H:%M"),
+    )
 
 def build_url(config: dict) -> str:
     """拼出完整请求地址，容忍用户已经填了 /v1 或完整路径"""
@@ -60,8 +84,12 @@ def resolve_api_key(config: dict, env_path: Path) -> str:
     return os.environ.get("TD_LLM_APIKEY") or os.environ.get("TD_API_KEY") or ""
 
 
-def extract_titles(text: str) -> list[str]:
-    """从模型输出里抽出任务标题，容忍代码块包裹和多余文字"""
+def extract_tasks(text: str) -> list[dict]:
+    """从模型输出里抽出任务对象，容忍代码块包裹和多余文字。
+
+    返回 [{"title","date","time","remind","type"}, ...]
+    缺字段时填 None；纯字符串输出也能兼容。
+    """
     if not text or not text.strip():
         raise LLMError("模型返回了空内容")
 
@@ -82,16 +110,17 @@ def extract_titles(text: str) -> list[str]:
             except json.JSONDecodeError:
                 data = None
         if data is None:
-            # 实在解析不了，按行降级拆分
+            # 实在解析不了，按行降级拆分（只保留标题）
             lines = [ln.strip().lstrip("-*0123456789. ").strip()
                      for ln in cleaned.splitlines()]
             lines = [ln for ln in lines if ln]
             if not lines:
                 raise LLMError("无法从模型输出中解析出任务")
-            return lines
+            return [{"title": ln, "date": None, "time": None,
+                     "remind": None, "type": None} for ln in lines]
 
     if isinstance(data, str):
-        return [data.strip()] if data.strip() else []
+        data = [data]
     if isinstance(data, dict):
         for key in ("tasks", "todos", "items", "list"):
             if isinstance(data.get(key), list):
@@ -100,21 +129,75 @@ def extract_titles(text: str) -> list[str]:
     if not isinstance(data, list):
         raise LLMError("模型输出的 JSON 不是数组")
 
-    titles = []
+    tasks = []
     for item in data:
         if isinstance(item, str):
             title = item.strip()
-        elif isinstance(item, dict):
-            title = str(item.get("title") or item.get("summary") or "").strip()
-        else:
+            tasks.append({"title": title, "date": None, "time": None,
+                          "remind": None, "type": None})
+            continue
+        if not isinstance(item, dict):
             title = str(item).strip()
-        if title:
-            titles.append(title)
-    return titles
+            if title:
+                tasks.append({"title": title, "date": None, "time": None,
+                              "remind": None, "type": None})
+            continue
+
+        title = str(item.get("title") or item.get("summary") or "").strip()
+        if not title:
+            continue
+        tasks.append({
+            "title": title,
+            "date": _norm_date(item.get("date")),
+            "time": _norm_time(item.get("time")),
+            "remind": _norm_time(item.get("remind")),
+            "type": _norm_type(item.get("type")),
+        })
+    return tasks
 
 
-def generate_titles(user_text: str, config: dict, env_path: Path) -> list[str]:
-    """把一段自然语言转成任务标题列表"""
+def _norm_date(value):
+    """规整日期为 YYYY-MM-DD，无法识别返回 None"""
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m-%d", "%m/%d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if fmt in ("%m-%d", "%m/%d"):
+            parsed = parsed.replace(year=datetime.now().year)
+        return parsed.strftime("%Y-%m-%d")
+    return None
+
+
+def _norm_time(value):
+    """规整时间为 HH:MM，无法识别返回 None"""
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%H:%M", "%H:%M:%S", "%H点%M分", "%H点"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%H:%M")
+        except ValueError:
+            continue
+    return None
+
+
+VALID_TYPES = ("work", "study", "life", "health", "meeting", "other")
+
+
+def _norm_type(value):
+    """规整任务类型，非法值归为 other"""
+    if not value:
+        return None
+    text = str(value).strip().lower()
+    return text if text in VALID_TYPES else "other"
+
+
+def generate_tasks(user_text: str, config: dict, env_path: Path) -> list[dict]:
+    """把一段自然语言转成带日程信息的任务列表"""
     text = (user_text or "").strip()
     if not text:
         raise LLMError("内容为空，没什么可生成的。")
@@ -137,7 +220,7 @@ def generate_titles(user_text: str, config: dict, env_path: Path) -> list[str]:
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": text},
         ],
         "temperature": 0.2,
@@ -173,4 +256,4 @@ def generate_titles(user_text: str, config: dict, env_path: Path) -> list[str]:
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("响应结构异常：缺少 choices[0].message.content") from exc
 
-    return extract_titles(content)
+    return extract_tasks(content)

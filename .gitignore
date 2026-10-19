@@ -9,6 +9,7 @@ tasks.json
 .td_pending.json
 .td_last_result.json
 .td_last_run.log
+.td_alarm_state.json
 
 # 密钥文件，绝对不能入库
 .env

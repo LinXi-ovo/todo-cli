@@ -5,8 +5,9 @@ import subprocess
 from pathlib import Path
 
 import llm
+import alarm
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 # 路径全部基于脚本所在目录，避免受"当前工作目录"影响
 BASE_DIR    = Path(__file__).resolve().parent
@@ -17,6 +18,7 @@ UNDO_PATH   = BASE_DIR / ".td_last_add.json"
 PENDING_PATH = BASE_DIR / ".td_pending.json"      # 后台任务进行中的标记
 RESULT_PATH  = BASE_DIR / ".td_last_result.json"  # 后台任务最近一次结果
 LOG_PATH     = BASE_DIR / ".td_last_run.log"      # 后台 worker 的输出日志
+ALARM_STATE  = BASE_DIR / ".td_alarm_state.json"  # 已提醒记录，防止重复弹窗
 
 TASKS = []
 CONFIG = {}
@@ -36,6 +38,9 @@ DEFAULT_CONFIG = {
     "llm_apikey": "",                       # 一般不填，放 .env 的 TD_LLM_APIKEY
     "llm_timeout": 60,                      # 请求超时秒数
     "llm_auto_confirm": True,               # 默认直接写入，不询问；设否可恢复确认
+    # ---- 提醒 ----
+    "remind_lead_minutes": 10,              # 未指定 remind 时提前多少分钟提醒
+    "remind_interval": 30,                  # 守护进程检查间隔（秒）
 }
 
 # 布尔配置项的友好写法
@@ -57,6 +62,7 @@ ALIASES = {
     "i": "ai",
     "ic": "ai-undo",
     "is": "ai-status",
+    "al": "alarm",
     "@": "ai",
 }
 
@@ -125,6 +131,72 @@ def load_last_add():
     return data
 
 
+def cmd_alarm(action):
+    """td alarm 子命令：start / auto on|off / status / test"""
+    lead = CONFIG.get("remind_lead_minutes", 10)
+    interval = CONFIG.get("remind_interval", 30)
+
+    if action in ("start", "run"):
+        print(f"提醒守护进程启动，每 {interval} 秒检查一次，提前 {lead} 分钟提醒。")
+        print("按 Ctrl+C 退出。")
+        try:
+            alarm.run_daemon(FILE_PATH, ALARM_STATE, interval, lead)
+        except KeyboardInterrupt:
+            print("\n已停止。")
+
+    elif action == "auto":
+        if len(sys.argv) < 4:
+            print("用法：td alarm auto on|off")
+            sys.exit(1)
+        choice = sys.argv[3].strip().lower()
+        try:
+            if choice in ("on", "是", "开", "1", "true"):
+                print(alarm.enable_autostart(Path(__file__).resolve()))
+            elif choice in ("off", "否", "关", "0", "false"):
+                print(alarm.disable_autostart())
+            else:
+                print("用法：td alarm auto on|off")
+                sys.exit(1)
+        except alarm.AlarmError as exc:
+            print(f"错误：{exc}")
+            sys.exit(1)
+
+    elif action == "status":
+        enabled = alarm.autostart_enabled()
+        print(f"开机自启：{'已开启' if enabled else '未开启'}")
+        print(f"检查间隔：{interval} 秒")
+        print(f"提前提醒：{lead} 分钟")
+
+        pending = []
+        for t in TASKS:
+            if t.get("done"):
+                continue
+            remind_at = alarm.parse_remind(t, lead)
+            if remind_at:
+                pending.append((remind_at, t))
+        pending.sort(key=lambda x: x[0])
+
+        if pending:
+            print(f"\n待提醒任务（{len(pending)} 条）：")
+            for remind_at, t in pending[:10]:
+                print(f"  {remind_at:%m-%d %H:%M}  {t['title']}")
+        else:
+            print("\n没有设置了时间的未完成任务。")
+
+    elif action == "test":
+        print("发送一条测试通知…")
+        ok = alarm.notify("td 测试提醒", "如果你看到这条通知，说明提醒功能正常。")
+        print("已发送。" if ok else "发送失败，可能是系统通知权限被关闭。")
+
+    else:
+        print("用法：\n"
+              "  td alarm start        启动提醒守护进程（前台运行）\n"
+              "  td alarm auto on      开启开机自启\n"
+              "  td alarm auto off     关闭开机自启\n"
+              "  td alarm status       查看提醒状态与待提醒任务\n"
+              "  td alarm test         发一条测试通知")
+
+
 def cmd_undo():
     """td ic：撤回上一次添加的任务"""
     snapshot = load_last_add()
@@ -169,13 +241,46 @@ def add_task(title):
     print(f"已添加：{title}")
 
 
+def _schedule_text(task):
+    """拼出任务的时间摘要，如 10-20 15:00"""
+    parts = []
+    date = task.get("date")
+    if date:
+        # 同年简写成 MM-DD，更紧凑
+        if date.startswith(time.strftime("%Y-")):
+            parts.append(date[5:])
+        else:
+            parts.append(date)
+    if task.get("time"):
+        parts.append(task["time"])
+    return " ".join(parts)
+
+
+TYPE_LABELS = {
+    "work": "工作",
+    "study": "学习",
+    "life": "生活",
+    "health": "健康",
+    "meeting": "会议",
+    "other": "其他",
+}
+
+
 def list_tasks():
     if not TASKS:
         print("暂无待办事项。")
         return
     for i, t in enumerate(TASKS, 1):
         status = "✓" if t["done"] else "○"
-        print(f"{i}. [{status}] {t['title']}")
+        when = _schedule_text(t)
+        kind = TYPE_LABELS.get(t.get("type") or "", "")
+        extras = []
+        if when:
+            extras.append(when)
+        if kind:
+            extras.append(kind)
+        suffix = f"  ({', '.join(extras)})" if extras else ""
+        print(f"{i}. [{status}] {t['title']}{suffix}")
 
 
 def mark_done(index):
@@ -322,7 +427,9 @@ def cmd_config(args):
               "  llm_model              模型名，如 deepseek-chat\n"
               "  llm_apikey             apikey，建议放 .env 的 TD_LLM_APIKEY\n"
               "  llm_timeout            请求超时秒数（默认 60）\n"
-              "  llm_auto_confirm       是否直接写入不询问（默认 是）")
+              "  llm_auto_confirm       是否直接写入不询问（默认 是）\n"
+              "  remind_lead_minutes    未指定 remind 时提前多少分钟提醒（默认 10）\n"
+              "  remind_interval        守护进程检查间隔秒数（默认 30）")
 
 
 def cmd_at(text):
@@ -419,16 +526,24 @@ def run_worker():
     result = {"ok": False, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     try:
-        titles = llm.generate_titles(text, CONFIG, ENV_PATH)
-        if not titles:
+        tasks = llm.generate_tasks(text, CONFIG, ENV_PATH)
+        if not tasks:
             result["error"] = "模型没有生成任何任务"
         else:
-            for t in titles:
-                TASKS.append({"title": t, "done": False})
+            for item in tasks:
+                TASKS.append({
+                    "title": item["title"],
+                    "done": False,
+                    "date": item.get("date"),
+                    "time": item.get("time"),
+                    "remind": item.get("remind"),
+                    "type": item.get("type"),
+                })
             save_tasks()
-            record_added(titles)
+            record_added([t["title"] for t in tasks])
             result["ok"] = True
-            result["titles"] = titles
+            result["titles"] = [t["title"] for t in tasks]
+            result["tasks"] = tasks
     except llm.LLMError as exc:
         result["error"] = str(exc)
     except Exception as exc:  # 后台进程不能静默崩掉
@@ -509,6 +624,7 @@ version                      v       显示版本信息
 ai <内容>                    i       后台交给大模型拆成多条任务
 ai-status                    is      查看后台解析进度与结果
 ai-undo                      ic      撤回上次 ai 添加的任务
+alarm <start|auto|status|test>  al   闹钟与提醒管理
 help                         h       显示帮助
 
 示例：
@@ -543,6 +659,12 @@ def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "__worker__":
         return run_worker()
 
+    # 开机自启的守护进程入口
+    if len(sys.argv) >= 2 and sys.argv[1] == "__daemon__":
+        lead = CONFIG.get("remind_lead_minutes", 10)
+        interval = CONFIG.get("remind_interval", 30)
+        return alarm.run_daemon(FILE_PATH, ALARM_STATE, interval, lead)
+
     # 无参数时直接展示列表，比报错更友好
     if len(sys.argv) < 2:
         list_tasks()
@@ -558,6 +680,8 @@ def main():
         cmd_undo()
     elif cmd == "ai-status":
         cmd_status()
+    elif cmd == "alarm":
+        cmd_alarm(args[0] if args else "")
     elif cmd == "add":
         if not args:
             print("错误：add 需要任务名，例如 td add 买牛奶")
