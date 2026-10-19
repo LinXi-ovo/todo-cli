@@ -76,6 +76,7 @@ td cfg get editor         # 读取单项
 | `show_list_after_add` | 否 | `td a` 之后是否自动显示列表 |
 | `show_list_after_delete` | 否 | `td x` 之后是否自动显示列表 |
 | `show_list_after_done` | 是 | `td d` 之后是否自动显示列表 |
+| `normalize_input` | 是 | 命令名大小写不敏感、任务名连续空格合并为单个 |
 
 开关类配置接受 `是/否`、`true/false`、`on/off`、`1/0` 等写法，统一以布尔值存储：
 
@@ -83,6 +84,17 @@ td cfg get editor         # 读取单项
 td cfg set show_list_after_add 是
 td cfg set show_list_after_done false
 ```
+
+## 输入容错
+
+开启 `normalize_input`（默认）时：
+
+```bash
+td ADD 买牛奶        # 等价于 td add，命令大小写不敏感
+td   a   "写   报告"  # 任务名连续空格合并为「写 报告」
+```
+
+任务名允许重复，同名任务会各自占用一个编号。
 
 ## 数据存储
 

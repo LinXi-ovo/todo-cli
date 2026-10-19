@@ -20,6 +20,8 @@ DEFAULT_CONFIG = {
     "show_list_after_add": False,     # td a 之后
     "show_list_after_delete": False,  # td x 之后
     "show_list_after_done": True,     # td d 之后
+    # 输入归一化：命令名大小写不敏感 + 任务名连续空格合并
+    "normalize_input": True,
 }
 
 # 布尔配置项的友好写法
@@ -231,7 +233,8 @@ def cmd_config(args):
               "  editor                 用于打开脚本/配置文件的编辑器\n"
               "  show_list_after_add    td a 后是否自动显示列表（默认 否）\n"
               "  show_list_after_delete td x 后是否自动显示列表（默认 否）\n"
-              "  show_list_after_done   td d 后是否自动显示列表（默认 是）")
+              "  show_list_after_done   td d 后是否自动显示列表（默认 是）\n"
+              "  normalize_input        命令大小写不敏感、任务名空格合并（默认 是）")
 
 
 def show_version():
@@ -269,8 +272,18 @@ help                         h       显示帮助
 
 
 # ---------- 入口 ----------
+def normalize_title(parts):
+    """把任务名的多个参数拼成一条，连续空白合并为单个空格，首尾去空白"""
+    text = " ".join(parts)
+    return " ".join(text.split())
+
+
 def resolve(cmd: str) -> str:
-    return ALIASES.get(cmd, cmd)
+    """命令名归一化：大小写不敏感、去掉首尾空白"""
+    if not CONFIG.get("normalize_input", True):
+        return ALIASES.get(cmd, cmd)
+    key = cmd.strip().lower()
+    return ALIASES.get(key, key)
 
 
 def main():
@@ -290,7 +303,11 @@ def main():
         if not args:
             print("错误：add 需要任务名，例如 td add 买牛奶")
             sys.exit(1)
-        add_task(" ".join(args))
+        title = normalize_title(args) if CONFIG.get("normalize_input", True) else " ".join(args)
+        if not title:
+            print("错误：任务名不能为空。")
+            sys.exit(1)
+        add_task(title)
         if CONFIG.get("show_list_after_add"):
             print()
             list_tasks()
