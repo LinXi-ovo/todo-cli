@@ -6,7 +6,7 @@ from pathlib import Path
 
 import llm
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # 路径全部基于脚本所在目录，避免受"当前工作目录"影响
 BASE_DIR    = Path(__file__).resolve().parent
@@ -14,6 +14,9 @@ FILE_PATH   = BASE_DIR / "tasks.json"
 CONFIG_PATH = BASE_DIR / ".td_config.json"
 ENV_PATH    = BASE_DIR / ".env"
 UNDO_PATH   = BASE_DIR / ".td_last_add.json"
+PENDING_PATH = BASE_DIR / ".td_pending.json"      # 后台任务进行中的标记
+RESULT_PATH  = BASE_DIR / ".td_last_result.json"  # 后台任务最近一次结果
+LOG_PATH     = BASE_DIR / ".td_last_run.log"      # 后台 worker 的输出日志
 
 TASKS = []
 CONFIG = {}
@@ -53,6 +56,7 @@ ALIASES = {
     "v": "version",
     "i": "ai",
     "ic": "ai-undo",
+    "is": "ai-status",
     "@": "ai",
 }
 
@@ -322,52 +326,161 @@ def cmd_config(args):
 
 
 def cmd_at(text):
-    """td @ 内容：交给大模型拆成若干任务"""
+    """td i 内容：后台交给大模型拆任务，主进程立即返回"""
     if not text or not text.strip():
         print("错误：@ 或 i 后面要跟内容，例如 td i 明天交报告然后买牛奶")
         sys.exit(1)
 
-    print("正在交给大模型解析…")
-    try:
-        titles = llm.generate_titles(text, CONFIG, ENV_PATH)
-    except llm.LLMError as exc:
-        print(f"错误：{exc}")
-        print("\n配置提示（括号内为当前值）：")
-        print(f"  llm_url       = {CONFIG.get('llm_url') or '（空）'}")
-        print(f"  llm_model     = {CONFIG.get('llm_model') or '（空）'}")
-        print(f"  apikey        = {'已配置' if llm.resolve_api_key(CONFIG, ENV_PATH) else '未配置'}")
-        print(f"\n设置示例：\n"
-              f"  td cfg set llm_url https://api.deepseek.com\n"
-              f"  td cfg set llm_model deepseek-chat\n"
-              f"  然后在 {ENV_PATH} 写入：TD_LLM_APIKEY=sk-xxx")
+    if _has_running_worker():
+        print("已有一个后台任务在解析中，请稍候（用 td is 查看进度）。")
         sys.exit(1)
 
-    if not titles:
-        print("模型没有生成任何任务。")
-        return
+    payload = {
+        "text": text,
+        "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        with open(PENDING_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        RESULT_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"错误：无法写入任务标记（{exc}）")
+        sys.exit(1)
 
-    print(f"\n解析出 {len(titles)} 条任务：")
-    for i, t in enumerate(titles, 1):
-        print(f"  {i}. {t}")
+    if not _spawn_worker():
+        PENDING_PATH.unlink(missing_ok=True)
+        print("错误：无法启动后台进程。")
+        sys.exit(1)
 
-    # 默认自动添加；只有 llm_auto_confirm 显式设为「否」才询问
-    if CONFIG.get("llm_auto_confirm") is False:
+    print("已交给大模型后台解析，你可以继续做别的事。")
+    print("  查看进度：td is")
+    print("  撤回结果：td ic")
+
+
+def _has_running_worker():
+    """有 pending 且进程还活着，就认为有任务在跑"""
+    if not PENDING_PATH.exists():
+        return False
+    try:
+        data = json.loads(PENDING_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        PENDING_PATH.unlink(missing_ok=True)
+        return False
+    pid = data.get("pid")
+    return bool(pid) and _pid_alive(pid)
+
+
+def _pid_alive(pid):
+    """Windows 上判断 pid 是否存活"""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return str(pid) in out
+
+
+def _spawn_worker():
+    """启动脱离终端的后台 worker"""
+    try:
+        with open(LOG_PATH, "w", encoding="utf-8") as log:
+            proc = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "__worker__"],
+                stdout=log, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                cwd=str(BASE_DIR),
+            )
+    except OSError:
+        return False
+
+    # 把 pid 写进 pending，便于判断是否还在跑
+    try:
+        data = json.loads(PENDING_PATH.read_text(encoding="utf-8"))
+        data["pid"] = proc.pid
+        PENDING_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except (OSError, json.JSONDecodeError):
+        pass
+    return True
+
+
+def run_worker():
+    """后台 worker 主体：解析内容并写入任务"""
+    try:
+        payload = json.loads(PENDING_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 1
+
+    text = payload.get("text", "")
+    result = {"ok": False, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+    try:
+        titles = llm.generate_titles(text, CONFIG, ENV_PATH)
+        if not titles:
+            result["error"] = "模型没有生成任何任务"
+        else:
+            for t in titles:
+                TASKS.append({"title": t, "done": False})
+            save_tasks()
+            record_added(titles)
+            result["ok"] = True
+            result["titles"] = titles
+    except llm.LLMError as exc:
+        result["error"] = str(exc)
+    except Exception as exc:  # 后台进程不能静默崩掉
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
         try:
-            answer = input("\n确认添加？(Y/n) ").strip().lower()
-        except EOFError:
-            answer = "n"
-        if answer in ("n", "no", "否"):
-            print("已取消。")
-            return
-    for t in titles:
-        TASKS.append({"title": t, "done": False})
-    save_tasks()
-    record_added(titles)
-    print(f"\n已添加 {len(titles)} 条任务。（如需撤回：td ic）")
+            RESULT_PATH.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+        PENDING_PATH.unlink(missing_ok=True)
+    return 0 if result.get("ok") else 1
 
-    if CONFIG.get("show_list_after_add"):
-        print()
-        list_tasks()
+
+def cmd_status():
+    """td is：查看后台解析状态与结果"""
+    running = _has_running_worker()
+
+    if running:
+        try:
+            data = json.loads(PENDING_PATH.read_text(encoding="utf-8"))
+            print(f"后台正在解析（{data.get('started', '未知时间')} 开始）")
+            print(f"  内容：{data.get('text', '')}")
+        except (OSError, json.JSONDecodeError):
+            print("后台正在解析…")
+    else:
+        # 进程已结束，清理残留的 pending
+        if PENDING_PATH.exists():
+            PENDING_PATH.unlink(missing_ok=True)
+
+    if RESULT_PATH.exists():
+        try:
+            result = json.loads(RESULT_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            result = None
+        if result:
+            print(f"\n最近一次结果（{result.get('time', '')}）：")
+            if result.get("ok"):
+                titles = result.get("titles", [])
+                print(f"  ✓ 已添加 {len(titles)} 条：")
+                for t in titles:
+                    print(f"    - {t}")
+                print("  （如需撤回：td ic）")
+            else:
+                print(f"  ✗ 失败：{result.get('error', '未知错误')}")
+                if LOG_PATH.exists():
+                    print(f"  日志：{LOG_PATH}")
+            return
+
+    if not running:
+        print("没有后台任务，也没有历史结果。")
 
 
 def show_version():
@@ -393,7 +506,8 @@ clear                        c       清空全部（需确认）
 self                         s       打开脚本源文件
 config                       cfg     查看/修改配置
 version                      v       显示版本信息
-ai <内容>                    i       交给大模型拆成多条任务
+ai <内容>                    i       后台交给大模型拆成多条任务
+ai-status                    is      查看后台解析进度与结果
 ai-undo                      ic      撤回上次 ai 添加的任务
 help                         h       显示帮助
 
@@ -425,6 +539,10 @@ def main():
     load_config()
     load_tasks()
 
+    # 后台 worker 入口，需在常规命令分发前拦截
+    if len(sys.argv) >= 2 and sys.argv[1] == "__worker__":
+        return run_worker()
+
     # 无参数时直接展示列表，比报错更友好
     if len(sys.argv) < 2:
         list_tasks()
@@ -438,6 +556,8 @@ def main():
         cmd_at(" ".join(args))
     elif cmd == "ai-undo":
         cmd_undo()
+    elif cmd == "ai-status":
+        cmd_status()
     elif cmd == "add":
         if not args:
             print("错误：add 需要任务名，例如 td add 买牛奶")

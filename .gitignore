@@ -4,8 +4,11 @@ tasks.json
 # 本地配置（含本机编辑器路径等）
 .td_config.json
 
-# td i 的撤销快照
+# td i 的撤销快照与后台任务状态
 .td_last_add.json
+.td_pending.json
+.td_last_result.json
+.td_last_run.log
 
 # 密钥文件，绝对不能入库
 .env
