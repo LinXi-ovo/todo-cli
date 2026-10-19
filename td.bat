@@ -1,2 +1,3 @@
 @echo off
-uv run "%~dp0td.py" %*
+rem Windows only: use the system-installed Python so requests/python-dotenv work
+python "%~dp0td.py" %*

@@ -1,6 +1,5 @@
 import sys
 import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -18,7 +17,8 @@ TASKS = []
 CONFIG = {}
 
 DEFAULT_CONFIG = {
-    "editor": "notepad" if os.name == "nt" else os.environ.get("EDITOR", "nano"),
+    # 仅支持 Windows，编辑器直接用 notepad
+    "editor": "notepad",
     # 下面三项：命令执行后是否自动把 `td l` 的内容再打印一遍
     "show_list_after_add": False,     # td a 之后
     "show_list_after_delete": False,  # td x 之后
