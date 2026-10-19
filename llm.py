@@ -29,13 +29,22 @@ class LLMError(Exception):
 
 
 def build_url(config: dict) -> str:
-    """拼出完整请求地址"""
+    """拼出完整请求地址，容忍用户已经填了 /v1 或完整路径"""
     url = str(config.get("llm_url") or "").strip()
     if not url:
         raise LLMError("未配置 llm_url，请先执行：td cfg set llm_url <地址>")
-    if url.rstrip("/").endswith("chat/completions"):
-        return url
-    return url.rstrip("/") + DEFAULT_PATH
+
+    base = url.rstrip("/")
+
+    # 已经是完整接口地址，原样使用
+    if base.endswith("chat/completions"):
+        return base
+
+    # 已以 /v1 结尾，只补后半段，避免拼成 /v1/v1/...
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+
+    return base + DEFAULT_PATH
 
 
 def resolve_api_key(config: dict, env_path: Path) -> str:

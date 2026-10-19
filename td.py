@@ -49,6 +49,8 @@ ALIASES = {
     "h": "help",
     "cfg": "config",
     "v": "version",
+    "i": "ai",
+    "@": "ai",
 }
 
 
@@ -254,7 +256,7 @@ def cmd_config(args):
 def cmd_at(text):
     """td @ 内容：交给大模型拆成若干任务"""
     if not text or not text.strip():
-        print("错误：@ 后面要跟内容，例如 td @ 明天交报告然后买牛奶")
+        print("错误：@ 或 i 后面要跟内容，例如 td i 明天交报告然后买牛奶")
         sys.exit(1)
 
     print("正在交给大模型解析…")
@@ -322,6 +324,7 @@ clear                        c       清空全部（需确认）
 self                         s       打开脚本源文件
 config                       cfg     查看/修改配置
 version                      v       显示版本信息
+ai <内容>                    i       交给大模型拆成多条任务
 help                         h       显示帮助
 
 示例：
@@ -361,7 +364,7 @@ def main():
     cmd  = resolve(sys.argv[1])
     args = sys.argv[2:]
 
-    if cmd == "@" or cmd == "ai":
+    if cmd == "ai":
         cmd_at(" ".join(args))
     elif cmd == "add":
         if not args:
